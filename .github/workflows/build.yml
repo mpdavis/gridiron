@@ -1,0 +1,80 @@
+name: Build Image
+
+# Builds this repo into ghcr.io/mpdavis/gridiron. Deployed from
+# kubernetes/apps/gridiron/gridiron/ in mpdavis/homelab, which pins a tag that
+# Renovate bumps there.
+#
+# The unit tests are NOT here — they are the required check on main, and a
+# required check cannot live behind this workflow's `paths` filter. See
+# tests.yml. Nothing reaches main with a red suite, so the image this publishes
+# is built from tested code by construction.
+#
+# TAGS ARE 1.1.<run_number>. This image was published as 1.0.<run_number> from
+# the homelab repo (last: 1.0.21). run_number restarted when it moved here, so
+# the minor bump keeps every new tag sorting above the old ones — otherwise
+# Renovate would read 1.1.x's predecessors as downgrades and never bump the pin.
+# Do not go to 2.x: homelab's Renovate holds majors for dashboard approval.
+#
+# ONLY main PUBLISHES. Renovate picks bumps by reading the registry's tag list,
+# which carries no provenance, so any tag this workflow pushes is a tag the
+# cluster can end up running. Publishing only from main makes "newest tag" and
+# "newest reviewed code" the same thing.
+#
+# Pull requests still build (never push) so a broken Dockerfile fails the PR
+# rather than main. The `paths` filter is the image's build context: merges that
+# only touch tests or CI do not publish a tag identical to the last one.
+
+on:
+  push:
+    branches: [main]
+    paths: &image-paths
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - 'README.md'
+      - 'gridiron/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths: *image-paths
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # The single gate on publishing. Covers workflow_dispatch too: dispatching
+      # this from a branch builds it without pushing, same as a PR.
+      PUSH: ${{ github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ env.PUSH == 'true' }}
+          tags: |
+            ghcr.io/mpdavis/gridiron:1.1.${{ github.run_number }}
+            ghcr.io/mpdavis/gridiron:latest
+
+      - name: Print image tag
+        run: |
+          if [ "$PUSH" = "true" ]; then
+            echo "Published ghcr.io/mpdavis/gridiron:1.1.${{ github.run_number }}"
+          else
+            echo "Built only — ${GITHUB_REF} does not publish. Merge to main to push a tag."
+          fi
